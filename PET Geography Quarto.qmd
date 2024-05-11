@@ -1,0 +1,741 @@
+---
+title: "The Geographic Distribution of cardiac PET imaging centers in the United States"
+subtitle: "An Analysis of Medicare Data"
+format: 
+  html:
+    toc: true
+    toc-expand: true
+    toc-location: body
+date: 2-5-2024
+theme: lightly
+author:
+  - name: "Ahmed Sayed (asu.ahmed.sayed@gmail.com)"
+    affiliations: "Ain Shams University, Faculty of Medicine"
+embed-resources: true
+toc-title: Contents
+page-layout: full
+code-fold: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+# Code Blocks
+
+## Setup data
+
+### Load libraries & functions
+
+```{r}
+packs <- c("readxl", "dplyr", "data.table", "janitor", "doParallel",
+           "stringr", "Hmisc", "tidygeocoder", "tidycensus",
+           "ggplot2", "ggpubr", "ggthemes", "ggbeeswarm", 
+           "geosphere", "sf", "usmap")
+lapply(packs, require, character.only = TRUE)
+```
+
+### Import data
+
+```{r}
+x <- read_xlsx("Medicare PET Data.xlsx") %>% data.table
+```
+
+### Clean up
+
+#### First round
+
+```{r}
+#Clean column names
+x <- clean_names(x)
+colnames(x) <- colnames(x) %>% str_remove_all("rndrng_|prvdr_")
+
+#Create a column consisting of city and state
+x[, city_state_zip := paste(city, state_abrvtn, zip5, sep = ", ")]
+
+x[, full_original_st := fifelse(
+  is.na(st2), st1, paste(st1, st2, sep = ", ")
+)]
+
+#Clean up the location variable
+x[, st1 := st1 %>%
+    str_replace_all(c("\\bSq\\b"  = "Square",
+                      "\\bAve\\b"  = "Avenue",
+                      "\\bPlz\\b"  = "Plaza",
+                      "\\bRd\\b"  = "Road",
+                      "\\bPkwy\\b"  = "Parkway",
+                      "\\bBlvd\\b"  = "Boulevard",
+                      "\\bBl\\b"  = "Boulevard",
+                      "\\bSte\\b"  = "Street",
+                      "\\bSt\\b"  = "Street",
+                      "\\bSt\\b"  = "Street",
+                      "\\bFwy\\b"  = "Freeway",
+                      "\\bDr\\b"  = "Drive",
+                      "\\bCir\\b"  = "Circle",
+                      "\\bBldg\\b" = "Building",
+                      "\\bLn\\b" = "Lane",
+                      "\\bHls\\b" = "Hills",
+                      "\\bTrl\\b" = "Trail",
+                      "\\bCtr\\b" = "Center",
+                      "\\bHwy\\b" = "Highway",
+                      "\\bMem\\b" = "Memorial", 
+                      "\\." = "",
+                      "," = "",
+                      "-" = "",
+                      "#" = "",
+                      " [0-9+]+$" = "",
+                      "(?i) [a-z+][0-9+]+$" = "",
+                      " .$" = "",
+                      "(?<=[0-9])[a-z]" = "",
+                      "Dept Of Radiology" = "",
+                      "406 Black" = "Black",
+                      "406A" = "",
+                      "OK, Tulsa, 74136, 6151 Yale 100" = "OK, Tulsa, 74136, 6151 Yale",
+                      "TX, Amarillo, 79106, 6200 I40" = "TX, Amarillo, 79106, 6200",
+                      "TX, San Antonio, 78201, 6800 West" = "TX, San Antonio, 78201, 6800",
+                      "1300 Wonder World" = "1330 Wonder World")) %>%
+    str_remove_all("Square|Avenue|Plaza|Road|Boulevard|Street|Drive|Parkway|Freeway|Suite|Circle|Building|Lane|Hills|Trail|Highway|Mc1133|H2100|\\b..\\b") %>%
+    str_squish]
+```
+
+#### Coalesce by location
+
+```{r}
+#Create a location variable consisting of street address, city, and state
+x[, address := paste(st1, city, state_abrvtn, zip5, sep = ", ")]
+
+#Coalesce by location
+locs <- x[, .(tot_benes = sum(tot_benes),
+      tot_srvcs = sum(tot_srvcs),
+      avg_mdcr_pymt_amt = mean(avg_mdcr_pymt_amt),
+      city = city %>% first,
+      st = full_original_st %>% first,
+      state = state_abrvtn %>% first,
+      zip5 = zip5 %>% first), 
+  by = address]
+
+#Recreate address using original full street name
+locs[, address := paste(st, city, state, zip5, sep = ", ")]
+```
+
+#### Second round
+
+```{r}
+locs[, address := address %>%
+       str_replace_all(c(
+         "801 Princeton Ave Sw, Suite 706, Birmingham, AL, 35211" = "817 Princeton Ave Sw, Professional Bldg 2 Suite 202, Birmingham, AL, 35211",
+         
+         "1701 S Shackleford Rd, Little Rock, AR, 72211" = "7 Shackleford West Blvd, Little Rock, AR, 72211",
+         
+         "2082 Mesquite Ave Ste 100a, Lake Havasu City, AZ, 86403" = "2082 Mesquite Ave, Suite A100, Lake Havasu City, AZ, 86403",
+         
+        "5140 E Glenn St, Tucson, AZ, 85712" = "5170 E Glenn St Ste 160, Tucson, AZ, 85712",
+        
+        "2901 Sillect Ave Ste 100, Bakersfield, CA, 93308" = "3008 Sillect Ave, Suite 240, Bakersfield, CA, 93308",
+        
+        "1860 Mowry Ave Ste 200, Fremont, CA, 94538" = "2191 Mowry Ave, Suite 500-H, Fremont, CA, 94538",
+        
+        "1207 E Herndon Ave, Fresno, CA, 93720" = "1313 E Herndon Ave, Suite 203, Fresno, CA, 93720",
+        
+        "7033 N Fresno St, Ste 301, Fresno, CA, 93720" = "7215 N Fresno St Ste 103, Fresno, CA, 93720",
+        
+        "10666 N Torrey Pines Rd, La Jolla, CA, 92037" = "10710 N Torrey Pines Rd, La Jolla, CA, 92037",
+        
+        "8631 W 3rd St, Suite 610e, Los Angeles, CA, 90048" = "8635 W 3rd St, Ste# 695w, Los Angeles, CA, 90048",
+        
+        "310 Mercy Ave, Merced, CA, 95340" = "315 Mercy Ave Ste 400, Merced, CA, 95340",
+        
+        "18350 Roscoe Bl, #400, Northridge, CA, 91325" = "18406 Roscoe Blvd, Northridge, CA, 91325",
+        
+        "2505 Samaritan Dr, Ste 600, San Jose, CA, 95124" = "2516 Samaritan Dr, Suite H, San Jose, CA, 95124",
+        
+        "2550 Samaritan Dr, Suite D, San Jose, CA, 95124" = "2516 Samaritan Dr, Suite H, San Jose, CA, 95124",
+        
+        "2030 Forest Ave, Suite 210, San Jose, CA, 95128" = "2081 Forest Ave, Suite 4, San Jose, CA, 95128",
+        "100 N Brent St, Ste 301, Ventura, CA, 93003" = "168 N Brent St Ste 503, Ventura, CA, 93003",
+        
+        "1400 S Potomac St, Suite 300, Aurora, CO, 80012" = "1444 S Potomac St Ste 300, Aurora, CO, 80012",
+        
+        "80 Seymour Street, Hartford Hospital Cardiology Dept, Hartford, CT, 06102" = "80 Seymour St, Hartford, CT, 06106",
+        
+        "1 Liberty Sq, New Britain, CT, 06051" = "One Liberty Square, New Britain, CT, 06051",
+        
+        "20 York St, Ynhh Dept Of Cardiology, New Haven, CT, 06510" = "333 Cedar St, Yale Cardiovascular Medicine, New Haven, CT, 06510",
+        
+        "4755 Ogletown Stanton Rd, Newark, DE, 19718" = "Nuclear Medicine, 4755 Ogletown-Stanton Rd, Newark, DE, 19718",
+        
+        "16244 S. Military Trial, Suite 560, Delray Beach, FL, 33484" = "16244 Military Trl, Suite 560, Delray Beach, FL, 33484",
+        
+        "450 W State Road 434, Ste 301, Longwood, FL, 32750" = "2170 W State Road 434 Ste 190, Longwood, FL, 32779",
+        
+        "4300 Alton Road, Suite 2050, Miami Beach, FL, 33140" = "4302 Alton Rd, Ste 220, Miami Beach, FL, 33140",
+        
+        "2101 Sw 20th Pl, Ocala, FL, 34471" = "2105 Sw 20th Pl, Ocala, FL, 34471",
+        "2111 Sw 20th Pl, Ocala, FL, 34471" = "2105 Sw 20th Pl, Ocala, FL, 34471",
+        
+        "6555 Sw Highway 200, Ocala, FL, 34476" = "6600 Sw Hwy, Suite 300, Ocala, FL, 34476",
+        
+        "5741 Bee Ridge Rd, Suite 490, Sarasota, FL, 34233" = "5831 Bee Ridge Rd, Suite 210, Sarasota, FL, 34233",
+        
+        "1255 37th St Ste D, Vero Beach, FL, 32960" = "1285 36th St Ste 200b, Vero Beach, FL, 32960",
+        "1285 36th Street, Suite 200, Vero Beach, FL, 32960" = "1285 36th St Ste 200b, Vero Beach, FL, 32960",
+        "1300 36th St Ste D, Vero Beach, FL, 32960" = "1285 36th St Ste 200b, Vero Beach, FL, 32960",
+        
+        "1364 Clifton Rd Ne, Atlanta, GA, 30322" = "1365 Clifton Rd Ne, Atlanta, GA, 30322",
+        
+        "755 Walther Rd, Lawrenceville, GA, 30045" = "755 Walther Rd, Lawrenceville, GA, 30046",
+        
+        "676 N Saint Clair St Ste 600, Chicago, IL, 60611" = "675 N Saint Clair St Ste 19100700, Chicago, IL, 60611",
+        
+        "Kumc Radiology, 3901 Raindbow Blvd Ms 4032, Kansas City, KS, 66160" = "3901 Rainbow Blvd # Ms 4032, Kansas City, KS, 66160",
+        
+        "441 Heymann Blvd, Lafayette, LA, 70503" = "443 Heymann Blvd, Ste B, Lafayette, LA, 70503",
+        
+        "4906 Ambassador Caffery Pkwy, Bldg. N - Ste. 1400, Lafayette, LA, 70508" = "5000 Ambassador Caffery Pkwy, Bldg #1, Lafayette, LA, 70508",
+        
+        "600 Dr Michael Debakey Dr, Lake Charles, LA, 70601" = "501 Michael Debakey Drive, Lake Charles, LA, 70601",
+        
+        "732 Harrison Ave, Preston, 3rd Floor, Boston, MA, 02118" = "840 Harrison Ave, Boston, MA, 02118",
+        
+        "1 Northeast Dr, Bangor, ME, 04401" = "One Northeast Drive, Emmc- Northeast Cardiology Associates, Bangor, ME, 04401",
+        
+        "1500 E Medical Center Dr, Ann Arbor, MI, 48109" = "1500 East Medical Center Dr, 1st Floor Cardiovascular Center Rm 1121a, Ann Arbor, MI, 48109",
+        
+        "2799 W Grand Blvd # K14, Detroit, MI, 48202" = "Henry Ford Health System, 2799 West Grand Boulevard, Detroit, MI, 48202",
+        
+        "3601 W 13 Mile Rd, Royal Oak, MI, 48073" = "3601 W. Thirteen Mile Road, Royal Oak, MI, 48073",
+        
+        "3501 A West Truman Blvd, Jefferson City, MO, 65109" = "3501 W Truman Blvd # A, Jefferson City, MO, 65109",
+        
+        "969 Lakeland Dr, Jackson, MS, 39216" = "970 Lakeland Dr, Suite 61, Jackson, MS, 39216",
+        
+        "Unc - Division Of Cardiology 6040 Burnett-Womack 6th Fl, 099 Manning Drive, Cb 7075, Chapel Hill, NC, 27599" = "101 Manning Dr, Chapel Hill, NC, 27599",
+        
+        "Erwin Rd, Durham, NC, 27710" = "2100 Erwin Rd, Durham, NC, 27705",
+        
+        "2465 W Horizon Ridge Pkwy, Suite 100, Henderson, NV, 89052" = "2779 W Horizon Ridge Pkwy, Suite #240, Henderson, NV, 89052",
+        
+        "2800 N Tenaya Way, Suite 202, Las Vegas, NV, 89128" = "3150 N Tenaya Way Ste 320, Las Vegas, NV, 89128",
+        
+        "2882 W 15th St, Brooklyn, NY, 11224" = "2882 W 15th St Uppr Level, Brooklyn, NY, 11224",
+        
+        "161 E Main St, Huntington, NY, 11743" = "172 E Main St, Huntington, NY, 11743",
+        "175 E Main St, Suite 200, Huntington, NY, 11743" = "172 E Main St, Huntington, NY, 11743",
+        
+        "630 West 168th Street, Columbia University, Division Of Cardiology, New York, NY, 10032" = "622 W 168th St, New York, NY, 10032",
+        
+        "9500 Euclid Ave, Cleveland, OH, 44195" = "Cleveland Clinic, 9500 Euclid Avenue, Cleveland, OH, 44195",
+        
+        "2224 Nw 50th St, Suite 276w, Oklahoma City, OK, 73112" = "3433 Nw 56th St, Ste 400, Oklahoma City, OK, 73112",
+        
+        "6151 S Yale Ave Ste 100a, Tulsa, OK, 74136" = "6151 S Yale Ave, Suite A-100, Tulsa, OK, 74136",
+        
+        "3400 Civic Center Blvd Fl 2, Philadelphia, PA, 19104" = "3400 Spruce St, Philadelphia, PA, 19104",
+        
+        "1305 W 18th St, Sioux Falls, SD, 57105" = "1301 W 18th St, Sioux Falls, SD, 57105",
+        
+        "310 N State Of Franklin Rd, Suite 400, Johnson City, TN, 37604" = "701 N State Of Franklin Rd, Ste 9, Johnson City, TN, 37604",
+        
+        "4230 Harding Pike, Suite 330, Nashville, TN, 37205" = "4230 Harding Rd, Suite 330, Nashville, TN, 37205",
+        
+        "6200 W I 40, Amarillo, TX, 79106" = "6200 I-40 W, Amarillo, TX, 79106",
+        
+        "6550 Fannin St, Smith Tower, Suite 1901, Houston, TX, 77030" = "6560 Fannin St, Ste 620, Houston, TX, 77030",
+        
+        "13300 Hargrave Rd, Suite 500, Houston, TX, 77070" = "13325 Hargrave Rd Ste 150, Houston, TX, 77070",
+        
+        "11914 Astoria Blvd Ste 140, Houston, TX, 77089" = "11920 Astoria Blvd Ste 340, Houston, TX, 77089",
+        
+        "6800 Ih 10 West, Suite 110, San Antonio, TX, 78201" = "6800 W Ih 10, Suite 350, San Antonio, TX, 78201",
+        
+        "11130 Christus Hills Ste 207 Medical Plaza 3, San Antonio, TX, 78251" = "11130 Christus Hls, Medical Plaza 3, Suite 207, San Antonio, TX, 78251",
+        
+        "1901 S Cedar St, Suite 301 Cardiac Study Center, Inc., P.S., Tacoma, WA, 98405" = "1901 South Cedar St, Suite 301, Tacoma, WA, 98405"
+        
+         )
+       )]
+```
+
+#### Recoalesce
+
+```{r}
+#Coalesce by location
+locs <- locs[, .(tot_benes = sum(tot_benes),
+      tot_srvcs = sum(tot_srvcs),
+      avg_mdcr_pymt_amt = mean(avg_mdcr_pymt_amt),
+      city = city %>% first,
+      st = st %>% first,
+      state = state %>% first,
+      zip5 = zip5 %>% first), 
+  by = address]
+```
+
+### Geocode
+
+```{r}
+
+#Get geocodes (longitude/latitude)
+geo_codes_arc <- locs %>%
+  geocode(address = address,
+          method = "arcgis", 
+          verbose = TRUE)
+#Coalesce by state
+states_n <- locs[, .(n = .N), by = state]
+
+#Add states with 0 PET centers
+states_n <- states_n[, state.abb[state.abb %nin% state]] %>%
+  add_row(states_n, state = ., n = 0)
+```
+
+### Create sheet to comb through duplicate addresses
+
+```{r}
+# locs %>% 
+#   select(state, city, zip5, st, address) %>%
+#   arrange(state, city, zip5, st, address) %>%
+#   write.csv("728 PET Addresses (new).csv")
+```
+
+## Plot
+
+### Box plot
+
+```{r}
+f1 <- ggplot(data = locs,
+       aes(y = tot_benes)) + 
+  geom_beeswarm(data = locs, 
+                alpha = 0.4,
+                size = 6,
+                cex = 4,
+                color = "lightblue3",
+                aes(y = tot_benes, x= 0)) +
+  
+  geom_boxplot(outlier.shape = NA,
+               fill =  NA,
+               color = "maroon",
+               linewidth = 2) +
+  scale_y_continuous(trans = "log",
+                     name = "Total number of beneficiaries (patients)",
+                     breaks = c(10, 20, 50, 
+                                100, 200, 500,
+                                1000, 2000, 5000,
+                                10000)) +
+  scale_x_continuous(name = NULL, labels = NULL, breaks = NULL) +
+  theme_pubclean() +
+  theme(text = element_text(size = 23, face = "bold"),
+        plot.title=element_text(face = "bold",hjust = 0.0, size = 20),
+        plot.subtitle = element_text(face = "bold", size = 13, hjust = 0.0, color = "grey45"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(size = 20, face = "bold"),
+        axis.title.x = element_text(size = 25, face = "bold"),
+        axis.title.y = element_text(size = 25, face = "bold"),
+        axis.line = element_line(colour = "black", linewidth = 1.2),
+        legend.position = "right",
+        legend.key.size = unit(1.25, "cm"))
+  
+ggsave(f1, filename = "Boxplot.png", 
+       dpi = 600,
+       height = 10, width = 10)
+```
+
+### State-level N
+
+```{r}
+#Transform latitude/longitude into acceptable format by usmap
+points_df <- usmap_transform(data = geo_codes_arc,
+                input_names = c("long", "lat"))
+
+#Plot!
+f2 <- plot_usmap(data = states_n, 
+           values = "n") +
+  scale_fill_gradient_tableau(name = "Number of cardiac PET centers") +
+  geom_point(data = points_df,
+             aes(x = x, y = y),
+             col = "maroon",
+             alpha = 0.4,
+             size = 5) +
+    ggtitle("State-level availability of cardiac PET imaging centers") +
+  #Customize theme
+  theme(#legend.key.width = unit(5,"cm"), legend.key.height = unit(10,"cm"),
+    legend.text = element_text(size = 18, face = "bold"), #legend.position = "bottom",
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.background = element_blank(), 
+    legend.key = element_blank(),
+    legend.position = c(0.6, 0.001),
+    plot.title=element_text(face = "bold", hjust = 0.5, size = 25),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank()) +
+  guides(fill = guide_colourbar(direction = "horizontal", title.position = "top",
+                                barwidth = 20, barheight = 3,
+                                ticks.colour = "black", ticks.linewidth = 0,
+                                override.aes = list(size = 12))
+  ) 
+
+#Save plot!
+ggsave(filename = "N per state.png",
+       bg = "white",
+       dpi = 600,
+       width = 16,
+       height = 9)
+
+```
+
+### State-level density (Figure 1A)
+
+```{r}
+#Bind full state names
+states_n <- states_n %>% 
+  left_join(data.frame(state_full = state.name,
+                       state_abb = state.abb),
+                   by = c("state" = "state_abb"))
+#Get US pop size
+state_pop <- get_decennial(geography = "state",
+                           year = 2020,
+                           variables = "P1_001N")
+
+#Join
+states_n <- states_n %>% 
+  left_join(state_pop %>% 
+              select(NAME, value) %>%
+              rename(pop = value),
+                   by = c("state_full" = "NAME"))
+
+
+#Transform latitude/longitude into acceptable format by usmap
+points_df <- usmap_transform(data = geo_codes_arc,
+                input_names = c("long", "lat"))
+
+#Add DC data
+states_n[state == "DC",
+         `:=`(state_full = "District of Columbia",
+              pop = 689545)]
+
+#Add PET density column
+states_n[, pet_density := 1000000*(n/pop)]
+
+#Arrange state by pop size
+states_n[, state := factor(state, states_n %>% arrange(-pet_density) %>% pull(state))]
+
+#Plot!
+f1a <- plot_usmap(data = states_n,
+                 values = "pet_density") +
+    geom_point(data = points_df,
+             aes(x = x, y = y),
+             col = "grey20",
+             alpha = 0.4,
+             size = 5) +
+  scale_fill_distiller(palette = "RdYlBu", direction = +1,
+                       name = "Number of cardiac PET centers per million") +
+    ggtitle(waiver()) +
+  #Customize theme
+  theme(#legend.key.width = unit(5,"cm"), legend.key.height = unit(10,"cm"),
+    legend.text = element_text(size = 18, face = "bold"), #legend.position = "bottom",
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.background = element_blank(), 
+    legend.key = element_blank(),
+    legend.position = c(0.6, 0.001),
+    plot.title=element_text(face = "bold", hjust = 0.5, size = 25),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank()) +
+  guides(fill = guide_colourbar(direction = "horizontal", title.position = "top",
+                                barwidth = 20, barheight = 3,
+                                ticks.colour = "black", ticks.linewidth = 0,
+                                override.aes = list(size = 12))
+  ) +
+  force_panelsizes(rows = unit(9, "in"),
+                   cols = unit(16, "in"))
+
+
+#Save plot!
+ggsave(filename = "Figure 1A.png",
+       bg = "white",
+       dpi = 1000,
+       width = 16,
+       height = 9)
+```
+
+### Census block-based map
+
+#### Prepare data
+
+```{r}
+#Import census tract data
+gdata <- sf::st_read(dsn = "tlgdb_2020_a_us_substategeo.gdb",
+                  layer = "Census_Tract")
+
+#Rename long/lat columns
+gdata <- gdata %>%
+  rename(lon = INTPTLON, lat = INTPTLAT) %>%
+  mutate(across(.cols = c("lon", "lat"), ~ as.numeric(.)))
+
+#Createa a matrix contiaining long/lat of census tracts
+ct_matrix <- matrix(ncol = 2, nrow = nrow(gdata),
+       c(gdata$lon, 
+         gdata$lat)
+         )
+#Createa a matrix contiaining long/lat of PET Centres
+pet_matrix <- matrix(ncol = 2, nrow = nrow(points_df),
+       c(points_df$long, 
+         points_df$lat)
+         )
+
+#Calculate distance using the Haversine function
+distances <- distm(x = pet_matrix, y = ct_matrix, 
+                   fun = geosphere::distHaversine)
+
+#Create an empty min_distances vessel
+min_distances <- as.numeric()
+#Fill up the vessel with the distance between each census tract and the nearest PET center
+for(i in 1:nrow(ct_matrix)) {
+ min_distances <- c(min_distances, distances[, i] %>% min) 
+}
+
+#Convert to km
+min_distances <- (min_distances/1000)
+
+#Remove redundant object
+rm(distances)
+
+#Attach
+gdata$dist <- min_distances
+
+#Import census tract file
+ct_data <- fread("US Census Tract 2020 Data.csv", 
+                 header = TRUE,
+                 select = c("GEO_ID", "NAME", "DP1_0001C"))
+
+#Remove the first 2 rows (non-census tract data)
+ct_data <- ct_data[!c(1, 2),]
+
+#Rename columns
+ct_data <- ct_data %>%
+  rename(any_of(.q(pop = DP1_0001C,
+                   GEOID = GEO_ID)))
+
+#Extract state names
+ct_data[, state := fifelse(NAME %>% str_detect(";"),
+                           word(NAME, -1, sep = "; "),
+                           word(NAME, -1, sep = ", "))] #Connecticut data has no semi-colon for whatever reason
+
+#Format GEOID similar to how it is in gdata
+ct_data[, GEOID := GEOID %>% str_remove("1400000US")]
+
+#Merge together
+gdata <- merge(gdata,
+               ct_data,
+               by = "GEOID")
+#Remove ct_data
+rm(ct_data)
+
+#Make population numeric
+gdata <- gdata %>%
+  mutate(pop = pop %>% as.numeric)
+```
+
+#### Plot map (Figure 1B)
+
+##### Minus PR/HW/AK
+
+```{r}
+#Plot
+f1b <- ggplot(data = gdata %>%
+               filter(state %nin% c("Hawaii", "Alaska", "Puerto Rico")),
+             aes(fill = cut(dist, 
+                            c(0, 5, 10, 25, 50, 100, 200, 500, 1000, 100000)),
+                  color = after_scale(fill))) +
+  geom_sf(color = NA, linewidth = 0) +
+  scale_fill_brewer(palette = "RdYlBu", direction = -1,
+                    name = "Distance (kilometres)",
+                    labels = c("Less than 5",
+                               "5 to 10",
+                               "10 to 25",
+                               "25 to 50",
+                               "50 to 100",
+                               "100 to 200",
+                               "200 to 500",
+                               "500 or greater")) +
+  # scale_fill_viridis_c(name = "Distance", trans = "sqrt") +
+    ggtitle(waiver()) +
+  #Customize theme
+  theme(
+    legend.text = element_text(size = 18, face = "bold"), 
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.background = element_blank(), 
+    legend.key = element_blank(),
+    legend.position = c(0.9, 0.25),
+    plot.title=element_text(face = "bold", hjust = 0.5, size = 25),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+    axis.title = element_blank())
+
+```
+
+##### Puerto Rico
+
+```{r}
+pr <- ggplot(data = gdata %>%
+               filter(state %in% c("Puerto Rico")),
+             aes(fill = cut(dist, 
+                            c(0, 5, 10, 25, 50, 100, 200, 500, 1000, 100000)),
+                  color = after_scale(fill))) +
+  geom_sf(color = NA, linewidth = 0) +
+  scale_fill_brewer(palette = "RdYlBu", direction = -1,
+                    name = "Distance (kilometres)",
+                    labels = c("Less than 5",
+                               "5 to 10",
+                               "10 to 25",
+                               "25 to 50",
+                               "50 to 100",
+                               "100 to 200",
+                               "200 to 500",
+                               "500 or greater")) +
+    theme(
+    legend.text = element_text(size = 18, face = "bold"), 
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.background = element_blank(), 
+    legend.key = element_blank(),
+    legend.position = "none",
+    plot.title=element_text(face = "bold", hjust = 0.5, size = 25),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank(),
+    axis.title = element_blank()) +
+  coord_sf(xlim = c(-68.5, -64.5),
+           ylim = c(17.8, 18.8)) +
+  force_panelsizes(rows = unit(0.5, "in"),
+                   cols = unit(0.8, "in"))
+
+```
+
+##### Hawaii
+
+```{r}
+hw <- ggplot(data = gdata %>%
+               filter(state %in% c("Hawaii")),
+             aes(fill = cut(dist, 
+                            c(0, 5, 10, 25, 50, 100, 200, 500, 1000, 100000)),
+                  color = after_scale(fill))) +
+  geom_sf(color = NA, linewidth = 0) +
+  scale_fill_brewer(palette = "RdYlBu", direction = -1,
+                    name = "Distance (kilometres)",
+                    labels = c("Less than 5",
+                               "5 to 10",
+                               "10 to 25",
+                               "25 to 50",
+                               "50 to 100",
+                               "100 to 200",
+                               "200 to 500",
+                               "500 or greater")) +
+    theme(
+    legend.text = element_text(size = 18, face = "bold"), 
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.background = element_blank(), 
+    legend.key = element_blank(),
+    legend.position = "none",
+    plot.title=element_text(face = "bold", hjust = 0.5, size = 25),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank(),
+    axis.title = element_blank()) +
+  coord_sf(xlim = c(-180, -150),
+           ylim = c(18, 30)) +
+  force_panelsizes(rows = unit(2, "in"),
+                   cols = unit(3.2, "in"))
+
+```
+
+##### AK
+
+```{r}
+ak <- ggplot(data = gdata %>%
+               filter(state %in% c("Alaska")),
+             aes(fill = cut(dist, 
+                            c(0, 5, 10, 25, 50, 100, 200, 500, 1000, 100000)),
+                  color = after_scale(fill))) +
+  geom_sf(color = NA, linewidth = 0) +
+  scale_fill_brewer(palette = "RdYlBu", direction = -1,
+                    name = "Distance (kilometres)",
+                    labels = c("Less than 5",
+                               "5 to 10",
+                               "10 to 25",
+                               "25 to 50",
+                               "50 to 100",
+                               "100 to 200",
+                               "200 to 500",
+                               "500 or greater")) +
+    theme(
+    legend.text = element_text(size = 18, face = "bold"), 
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.background = element_blank(), 
+    legend.key = element_blank(),
+    legend.position = "none",
+    plot.title=element_text(face = "bold", hjust = 0.5, size = 25),
+    panel.grid = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+    plot.background = element_blank(),
+    axis.title = element_blank()) +
+  coord_sf(xlim = c(-180, -130),
+           ylim = c (51, 72)) +
+  force_panelsizes(rows = unit(2, "in"),
+                   cols = unit(3.2, "in"))
+```
+
+##### Merge
+
+```{r}
+
+#Mege with Alaska
+f1b <- f1b + inset_element(ak,
+                            left = 0, right = 0.3, top = 0.3, bottom = 0) 
+
+#Merge with Hawaii
+f1b <- f1b + inset_element(hw,
+                            left = 0.2, right = 0.4, top = 0.3, bottom = 0) 
+
+#Merge with Puerto Rico
+f1b <- f1b + inset_element(pr,
+                            left = 0.75, right = 0.85, top = 0.1, bottom = 0) 
+
+#Save plot!
+ggsave(filename = "Figure 1B.png",
+       dpi = 1000,
+       width = 16,
+       height = 9) 
+```
+
+#### Get relevant numbers
+
+```{r}
+
+#Remove geom 
+gdata <- gdata %>% 
+  select(pop, state, dist) %>%
+  data.table
+
+#Nearest overall
+mdist <- gdata[, wtd.quantile(dist, pop, probs = 0.5)]
+
+#Nearest by state
+mdist_state <- gdata[, .(mdist = wtd.quantile(dist, pop, probs = 0.5)), by = state]
+
+#Join to state abbreviations
+mdist_state <- mdist_state %>% 
+  left_join(data.frame(state_full = state.name,
+                       state_abb = state.abb),
+            by = c("state" = "state_full"))
+
+#Arrange state by pop size
+mdist_state[, state_abb := factor(state_abb, mdist_state %>% arrange(-mdist) %>% pull(state_abb))]
+```
