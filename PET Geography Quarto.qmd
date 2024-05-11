@@ -286,15 +286,6 @@ states_n <- states_n[, state.abb[state.abb %nin% state]] %>%
   add_row(states_n, state = ., n = 0)
 ```
 
-### Create sheet to comb through duplicate addresses
-
-```{r}
-# locs %>% 
-#   select(state, city, zip5, st, address) %>%
-#   arrange(state, city, zip5, st, address) %>%
-#   write.csv("728 PET Addresses (new).csv")
-```
-
 ## Plot
 
 ### Box plot
@@ -347,7 +338,7 @@ points_df <- usmap_transform(data = geo_codes_arc,
 
 #Plot!
 f2 <- plot_usmap(data = states_n, 
-           values = "n") +
+                 values = "n") +
   scale_fill_gradient_tableau(name = "Number of cardiac PET centers") +
   geom_point(data = points_df,
              aes(x = x, y = y),
@@ -425,7 +416,7 @@ f1a <- plot_usmap(data = states_n,
              aes(x = x, y = y),
              col = "grey20",
              alpha = 0.4,
-             size = 5) +
+             size = 3) +
   scale_fill_distiller(palette = "RdYlBu", direction = +1,
                        name = "Number of cardiac PET centers per million") +
     ggtitle(waiver()) +
@@ -458,13 +449,77 @@ ggsave(filename = "Figure 1A.png",
        height = 9)
 ```
 
+### Intersection of points with rural/urban areas
+
+```{r}
+#Read rural-urban classification data
+rudata <- sf::read_sf("RU Data/tl_2021_us_cbsa.shp")
+
+#Rename long/lat columns
+rudata <- rudata %>%
+  rename(lon = INTPTLON, lat = INTPTLAT) %>%
+  mutate(across(.cols = c("lon", "lat"), ~ as.numeric(.))) %>%
+  clean_names %>%
+  filter(lsad == "M1")
+
+#Convert the object returned by tidygeocode into an sf object
+geo_pet_points <- geo_codes_arc %>%
+  st_as_sf(coords = c("long", "lat"))
+
+#Create matching CRS
+st_crs(geo_pet_points) <- "WGS84"
+geo_pet_points <- st_transform(geo_pet_points, crs = "NAD83")
+
+#Get N of intersections
+ints <- st_intersects(rudata, geo_pet_points)
+
+#Sum them up
+metro <- lapply(1:length(ints), 
+       function(i) length(ints[[i]]) > 0) %>%
+  unlist %>%
+  factor %>% 
+  summary
+
+#Convert to data.table
+rudata <- rudata %>% data.table
+
+#Confirm in another way
+for(i in 1:rudata[,.N]) {
+  
+  any_present <- which(locs$city %in% rudata[i, name %>% 
+           word(1, sep = ",") %>%
+           str_split("-") %>%
+           unlist])
+  
+  if(length(any_present > 0)) {
+  same_state <- locs$state[any_present] %in% rudata[i, name %>% 
+           word(2, sep = ",") %>%
+           str_split("-") %>%
+           unlist %>% str_trim]
+  }
+  
+  if(length(any_present > 0) & any(same_state) ) {
+    rudata[i, present := TRUE]
+  } else {
+    rudata[i, present := FALSE]
+  }
+  
+}
+
+#Compare estimates 
+rudata[, present %>% summary] #This will be more imprecise/underestimate because not all statistical areas have all the city names in them.
+
+metro #This will be correct
+#But overall, they should not be too different from one another.
+```
+
 ### Census block-based map
 
 #### Prepare data
 
 ```{r}
 #Import census tract data
-gdata <- sf::st_read(dsn = "tlgdb_2020_a_us_substategeo.gdb",
+gdata <- sf::st_read(dsn = "tlgdb_2021_a_us_substategeo.gdb",
                   layer = "Census_Tract")
 
 #Rename long/lat columns
@@ -719,23 +774,39 @@ ggsave(filename = "Figure 1B.png",
 
 ```{r}
 
+##N
+#Total number of unique cardiac PET centers
+locs[, uniqueN(address)]
+#By State
+states_n %>% arrange(-n)
+#States with no PET
+states_n[n == 0]
+
+##Density
+states_n %>% 
+  arrange(-pet_density) %>%
+  mutate(pet_density = round(pet_density, 1))
+
+##Median distance 
 #Remove geom 
 gdata <- gdata %>% 
   select(pop, state, dist) %>%
   data.table
 
-#Nearest overall
-mdist <- gdata[, wtd.quantile(dist, pop, probs = 0.5)]
+#Calculated weighted median distance
+gdata[, wtd.quantile(dist, pop, probs = c(0.25, 0.5, 0.75))
+      %>% round(1)]
+
+##N and % of US citizens more than 100km from a cardiac PET center
+round(gdata[dist > 100, pop %>% sum]/1000000, 1) #N (in millions)
+round(100*gdata[dist > 100, pop %>% sum]/gdata[, pop %>% sum], 1) #Percentage 
 
 #Nearest by state
-mdist_state <- gdata[, .(mdist = wtd.quantile(dist, pop, probs = 0.5)), by = state]
+gdata[, 
+      .(mdist = wtd.quantile(dist, pop, probs = 0.5) %>% round(0)), 
+      by = state] %>% arrange(-mdist)
 
-#Join to state abbreviations
-mdist_state <- mdist_state %>% 
-  left_join(data.frame(state_full = state.name,
-                       state_abb = state.abb),
-            by = c("state" = "state_full"))
-
-#Arrange state by pop size
-mdist_state[, state_abb := factor(state_abb, mdist_state %>% arrange(-mdist) %>% pull(state_abb))]
+#N of metropolitan statisitcal areas with a cardiac PET center
+metro
+round(100*metro[1]/sum(metro[1:2]), 1)
 ```
